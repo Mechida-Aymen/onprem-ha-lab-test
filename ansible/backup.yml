@@ -1,0 +1,39 @@
+---
+- name: Configure and run PostgreSQL backups
+  hosts: db01
+  become: true
+  roles:
+    - backup
+  tasks:
+    - name: Run an immediate backup
+      ansible.builtin.systemd_service:
+        name: onprem-postgresql-backup.service
+        state: started
+
+    - name: Find completed database backups
+      ansible.builtin.find:
+        paths: "{{ postgresql_backup_directory }}"
+        patterns: "*.dump"
+        file_type: file
+      register: postgresql_backups
+
+    - name: Require at least one completed backup
+      ansible.builtin.assert:
+        that:
+          - postgresql_backups.matched | int >= 1
+        fail_msg: No completed PostgreSQL backup was found.
+
+    - name: Select the newest backup
+      ansible.builtin.set_fact:
+        newest_postgresql_backup: "{{ (postgresql_backups.files | sort(attribute='mtime') | last).path }}"
+
+    - name: Verify the newest backup checksum
+      ansible.builtin.command:
+        argv:
+          - sha256sum
+          - --check
+          - "{{ newest_postgresql_backup }}.sha256"
+      args:
+        chdir: "{{ postgresql_backup_directory }}"
+      become_user: postgres
+      changed_when: false

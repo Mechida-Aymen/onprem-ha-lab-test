@@ -1,0 +1,9 @@
+---
+application_service_name: onprem-ha-app
+application_user: onprem-app
+application_group: onprem-app
+application_directory: /opt/onprem-ha-app
+application_source: "{{ playbook_dir }}/../application/app.py"
+application_version: "1.2.2"
+application_database_enabled: false
+application_environment_file: /etc/onprem-ha-app.env

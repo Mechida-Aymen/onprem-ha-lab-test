@@ -1,0 +1,6 @@
+---
+# Copy this file to ../group_vars/vault.yml, replace both values with unique
+# random strings of at least 32 characters, and encrypt the resulting file with
+# `ansible-vault encrypt ../group_vars/vault.yml` before running the playbooks.
+postgresql_replication_password: replace-with-a-unique-random-value
+postgresql_application_password: replace-with-a-different-random-value

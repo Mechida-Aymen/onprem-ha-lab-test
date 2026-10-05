@@ -1,0 +1,18 @@
+[Unit]
+Description=Back up the on-prem HA PostgreSQL database
+Requires=postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}.service
+After=postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/local/sbin/backup-onprem-postgresql
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ postgresql_backup_directory }}

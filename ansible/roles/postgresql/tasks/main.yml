@@ -1,0 +1,54 @@
+---
+- name: Validate PostgreSQL node settings
+  ansible.builtin.assert:
+    that:
+      - postgresql_node_role in ['primary', 'replica']
+      - postgresql_primary_host in groups['database']
+      - postgresql_replica_host in groups['database']
+      - postgresql_replication_password | length >= 32
+      - postgresql_application_password | length >= 32
+    fail_msg: PostgreSQL inventory or encrypted credentials are incomplete.
+  no_log: true
+
+- name: Install PostgreSQL packages
+  ansible.builtin.apt:
+    name:
+      - acl
+      - postgresql
+      - postgresql-client
+      - postgresql-contrib
+      - python3-psycopg2
+    state: present
+
+- name: Install PostgreSQL replication settings
+  ansible.builtin.template:
+    src: 99-onprem-ha.conf.j2
+    dest: "/etc/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_name }}/conf.d/99-onprem-ha.conf"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  notify: Restart PostgreSQL
+
+- name: Install private-network authentication rules
+  ansible.builtin.blockinfile:
+    path: "/etc/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_name }}/pg_hba.conf"
+    marker: "# {mark} ANSIBLE MANAGED ONPREM HA"
+    block: |
+      host replication {{ postgresql_replication_user }} {{ hostvars[postgresql_replica_host].ansible_host }}/32 scram-sha-256
+      host {{ postgresql_application_database }} {{ postgresql_application_user }} {{ lab_network }} scram-sha-256
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  notify: Restart PostgreSQL
+
+- name: Apply PostgreSQL configuration before node setup
+  ansible.builtin.meta: flush_handlers
+
+- name: Configure the primary node
+  ansible.builtin.include_tasks: primary.yml
+  when: postgresql_node_role == 'primary'
+
+- name: Configure the replica node
+  ansible.builtin.include_tasks: replica.yml
+  when: postgresql_node_role == 'replica'
+

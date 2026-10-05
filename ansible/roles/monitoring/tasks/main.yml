@@ -1,0 +1,89 @@
+---
+- name: Install Prometheus Node Exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+
+- name: Create the custom metrics directory
+  ansible.builtin.file:
+    path: "{{ monitoring_textfile_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the textfile collector
+  ansible.builtin.copy:
+    content: |
+      ARGS="--collector.textfile.directory={{ monitoring_textfile_directory }}"
+    dest: /etc/default/prometheus-node-exporter
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Node Exporter
+
+- name: Install the lab health collector
+  ansible.builtin.template:
+    src: collect-onprem-health.sh.j2
+    dest: /usr/local/sbin/collect-onprem-health
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /bin/bash -n %s
+
+- name: Install the health collector service
+  ansible.builtin.template:
+    src: onprem-health-collector.service.j2
+    dest: /etc/systemd/system/onprem-health-collector.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload monitoring units
+
+- name: Install the health collector timer
+  ansible.builtin.template:
+    src: onprem-health-collector.timer.j2
+    dest: /etc/systemd/system/onprem-health-collector.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload monitoring units
+
+- name: Apply monitoring configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Node Exporter
+  ansible.builtin.systemd_service:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+
+- name: Enable and start the health collector timer
+  ansible.builtin.systemd_service:
+    name: onprem-health-collector.timer
+    enabled: true
+    state: started
+
+- name: Run the health collector immediately
+  ansible.builtin.systemd_service:
+    name: onprem-health-collector.service
+    state: started
+  changed_when: false
+
+- name: Read the local metrics endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ monitoring_node_exporter_port }}/metrics"
+    return_content: true
+    status_code: 200
+  register: monitoring_metrics
+  retries: 10
+  delay: 1
+  until: monitoring_metrics.status == 200
+
+- name: Verify system and lab metrics are exposed
+  ansible.builtin.assert:
+    that:
+      - "'node_uname_info' in monitoring_metrics.content"
+      - "'onprem_service_up' in monitoring_metrics.content"
+    fail_msg: Node Exporter did not expose the expected metrics.
+

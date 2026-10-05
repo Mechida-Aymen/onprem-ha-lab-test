@@ -1,0 +1,125 @@
+---
+- name: Prove a PostgreSQL backup can recover deleted data
+  hosts: db01
+  become: true
+  vars_files:
+    - roles/backup/defaults/main.yml
+  vars:
+    restore_test_database: onprem_app_restore_test
+    restore_probe_id: 9001
+    restore_probe_message: recovered-from-backup
+  tasks:
+    - name: Create a row that must survive the backup
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname={{ postgresql_application_database }}
+          - --set=ON_ERROR_STOP=1
+          - --command=INSERT INTO replication_probe (probe_id, message) VALUES ({{ restore_probe_id }}, '{{ restore_probe_message }}') ON CONFLICT (probe_id) DO UPDATE SET message = EXCLUDED.message, written_at = now();
+      become_user: postgres
+      changed_when: true
+
+    - name: Run the backup containing the recovery probe
+      ansible.builtin.systemd_service:
+        name: onprem-postgresql-backup.service
+        state: started
+
+    - name: Find completed database backups
+      ansible.builtin.find:
+        paths: "{{ postgresql_backup_directory }}"
+        patterns: "*.dump"
+        file_type: file
+      register: restore_test_backups
+
+    - name: Select the newest backup for restore testing
+      ansible.builtin.set_fact:
+        restore_test_backup: "{{ (restore_test_backups.files | sort(attribute='mtime') | last).path }}"
+
+    - name: Verify the selected backup checksum
+      ansible.builtin.command:
+        argv:
+          - sha256sum
+          - --check
+          - "{{ restore_test_backup }}.sha256"
+      args:
+        chdir: "{{ postgresql_backup_directory }}"
+      become_user: postgres
+      changed_when: false
+
+    - name: Delete the recovery probe from the primary
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname={{ postgresql_application_database }}
+          - --set=ON_ERROR_STOP=1
+          - --command=DELETE FROM replication_probe WHERE probe_id = {{ restore_probe_id }};
+      become_user: postgres
+      changed_when: true
+
+    - name: Perform the isolated restore test
+      block:
+        - name: Remove an earlier restore-test database
+          ansible.builtin.command:
+            argv:
+              - dropdb
+              - --if-exists
+              - --force
+              - "{{ restore_test_database }}"
+          become_user: postgres
+          changed_when: true
+
+        - name: Create the empty restore-test database
+          ansible.builtin.command:
+            argv:
+              - createdb
+              - "{{ restore_test_database }}"
+          become_user: postgres
+          changed_when: true
+
+        - name: Restore the backup into the isolated database
+          ansible.builtin.command:
+            argv:
+              - pg_restore
+              - --exit-on-error
+              - --dbname={{ restore_test_database }}
+              - "{{ restore_test_backup }}"
+          become_user: postgres
+          changed_when: true
+
+        - name: Read the deleted row from the restored database
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --dbname={{ restore_test_database }}
+              - --tuples-only
+              - --no-align
+              - --command=SELECT message FROM replication_probe WHERE probe_id = {{ restore_probe_id }};
+          become_user: postgres
+          register: recovered_backup_probe
+          changed_when: false
+
+        - name: Assert the deleted data was recovered
+          ansible.builtin.assert:
+            that:
+              - recovered_backup_probe.stdout == restore_probe_message
+            fail_msg: The deleted recovery probe was missing from the restored backup.
+      always:
+        - name: Return the recovery probe to the primary
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --dbname={{ postgresql_application_database }}
+              - --set=ON_ERROR_STOP=1
+              - --command=INSERT INTO replication_probe (probe_id, message) VALUES ({{ restore_probe_id }}, '{{ restore_probe_message }}') ON CONFLICT (probe_id) DO UPDATE SET message = EXCLUDED.message, written_at = now();
+          become_user: postgres
+          changed_when: true
+
+        - name: Remove the isolated restore-test database
+          ansible.builtin.command:
+            argv:
+              - dropdb
+              - --if-exists
+              - --force
+              - "{{ restore_test_database }}"
+          become_user: postgres
+          changed_when: true

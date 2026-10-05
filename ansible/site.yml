@@ -1,0 +1,58 @@
+---
+- name: Bootstrap hosts for Ansible management
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Set a coarse system clock from the controller
+      ansible.builtin.raw: >-
+        date -u --set '{{ lookup("pipe", "date -u +%Y-%m-%dT%H:%M:%SZ") }}'
+        && hwclock --systohc || true
+      changed_when: false
+
+    - name: Ensure Python and APT bindings are installed
+      ansible.builtin.raw: >-
+        if test -x /usr/bin/python3
+        && /usr/bin/python3 -c 'import apt' >/dev/null 2>&1;
+        then echo PYTHON_PRESENT;
+        else apt-get update
+        && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-apt
+        && echo PYTHON_INSTALLED;
+        fi
+      register: python_bootstrap
+      changed_when: "'PYTHON_INSTALLED' in python_bootstrap.stdout"
+
+- name: Apply common configuration
+  hosts: all
+  roles:
+    - common
+
+- name: Configure the PostgreSQL primary
+  hosts: db01
+  vars_files:
+    - group_vars/vault.yml
+  roles:
+    - postgresql
+    - backup
+
+- name: Configure the PostgreSQL replica
+  hosts: db02
+  vars_files:
+    - group_vars/vault.yml
+  roles:
+    - postgresql
+
+- name: Configure highly available web nodes
+  hosts: web
+  serial: 1
+  vars_files:
+    - group_vars/vault.yml
+  roles:
+    - application
+    - haproxy
+    - keepalived
+
+- name: Configure lightweight monitoring
+  hosts: all
+  roles:
+    - monitoring

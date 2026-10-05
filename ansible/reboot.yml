@@ -1,0 +1,79 @@
+---
+- name: Reboot lab nodes one at a time
+  hosts: all
+  serial: 1
+  become: true
+  tasks:
+    - name: Reboot the node
+      ansible.builtin.reboot:
+        msg: Reboot initiated by Ansible maintenance playbook
+        connect_timeout: 10
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 5
+
+    - name: Verify Ansible connectivity after reboot
+      ansible.builtin.ping:
+
+    - name: Verify core services after reboot
+      ansible.builtin.service_facts:
+
+    - name: Assert continuous core services are running
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['ssh.service'].state == 'running'
+          - ansible_facts.services['chrony.service'].state == 'running'
+          - ansible_facts.services['prometheus-node-exporter.service'].state == 'running'
+        fail_msg: A core service did not recover after reboot.
+
+    - name: Assert web services recovered after reboot
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['onprem-ha-app.service'].state == 'running'
+          - ansible_facts.services['haproxy.service'].state == 'running'
+          - ansible_facts.services['keepalived.service'].state == 'running'
+        fail_msg: A web-tier service did not recover after reboot.
+      when: inventory_hostname in groups['web']
+
+    - name: Verify the local application and database path after reboot
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/db-health
+        return_content: true
+        status_code: 200
+      register: post_reboot_application_health
+      retries: 12
+      delay: 5
+      until:
+        - post_reboot_application_health.status == 200
+        - post_reboot_application_health.json.status == 'ok'
+      when: inventory_hostname in groups['web']
+
+    - name: Assert PostgreSQL recovered after reboot
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['postgresql@17-main.service'].state == 'running'
+        fail_msg: PostgreSQL did not recover after reboot.
+      when: inventory_hostname in groups['database']
+
+    - name: Verify PostgreSQL accepts connections after reboot
+      ansible.builtin.command: /usr/bin/pg_isready -q
+      register: post_reboot_postgresql_ready
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: post_reboot_postgresql_ready.rc == 0
+      when: inventory_hostname in groups['database']
+
+    - name: Read the firewall rules loaded after reboot
+      ansible.builtin.command: nft list ruleset
+      register: nftables_ruleset
+      changed_when: false
+
+    - name: Assert the managed firewall is active
+      ansible.builtin.assert:
+        that:
+          - "'table inet filter' in nftables_ruleset.stdout"
+          - "'policy drop' in nftables_ruleset.stdout"
+          - "'tcp dport 22 accept' in nftables_ruleset.stdout"
+        fail_msg: The managed nftables rules did not recover after reboot.
+

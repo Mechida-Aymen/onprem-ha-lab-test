@@ -1,0 +1,104 @@
+---
+- name: Ensure the primary cluster is running
+  ansible.builtin.systemd_service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    enabled: true
+    state: started
+
+- name: Check for the replication role
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --tuples-only
+      - --no-align
+      - --command
+      - "SELECT 1 FROM pg_roles WHERE rolname='{{ postgresql_replication_user }}';"
+  become_user: postgres
+  register: postgresql_replication_role
+  changed_when: false
+
+- name: Create the replication role
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --set
+      - ON_ERROR_STOP=1
+      - --command
+      - "CREATE ROLE {{ postgresql_replication_user }} WITH LOGIN REPLICATION PASSWORD '{{ postgresql_replication_password }}';"
+  become_user: postgres
+  when: postgresql_replication_role.stdout != '1'
+  no_log: true
+
+- name: Check for the application role
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --tuples-only
+      - --no-align
+      - --command
+      - "SELECT 1 FROM pg_roles WHERE rolname='{{ postgresql_application_user }}';"
+  become_user: postgres
+  register: postgresql_application_role
+  changed_when: false
+
+- name: Create the application role
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --set
+      - ON_ERROR_STOP=1
+      - --command
+      - "CREATE ROLE {{ postgresql_application_user }} WITH LOGIN PASSWORD '{{ postgresql_application_password }}';"
+  become_user: postgres
+  when: postgresql_application_role.stdout != '1'
+  no_log: true
+
+- name: Check for the application database
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --tuples-only
+      - --no-align
+      - --command
+      - "SELECT 1 FROM pg_database WHERE datname='{{ postgresql_application_database }}';"
+  become_user: postgres
+  register: postgresql_application_db
+  changed_when: false
+
+- name: Create the application database
+  ansible.builtin.command:
+    argv:
+      - createdb
+      - --owner
+      - "{{ postgresql_application_user }}"
+      - "{{ postgresql_application_database }}"
+  become_user: postgres
+  when: postgresql_application_db.stdout != '1'
+
+- name: Check for the physical replication slot
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --tuples-only
+      - --no-align
+      - --command
+      - "SELECT 1 FROM pg_replication_slots WHERE slot_name='{{ postgresql_replication_slot }}';"
+  become_user: postgres
+  register: postgresql_replication_slot_result
+  changed_when: false
+
+- name: Create the physical replication slot
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --set
+      - ON_ERROR_STOP=1
+      - --command
+      - "SELECT pg_create_physical_replication_slot('{{ postgresql_replication_slot }}');"
+  become_user: postgres
+  when: postgresql_replication_slot_result.stdout != '1'
+
+- name: Verify the primary accepts connections
+  ansible.builtin.command: >-
+    pg_isready --host 127.0.0.1 --port {{ postgresql_port }}
+  changed_when: false

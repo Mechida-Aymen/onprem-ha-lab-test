@@ -1,0 +1,26 @@
+---
+# This account must exist on each VM before Ansible can connect.
+ansible_user: ansible
+ansible_python_interpreter: /usr/bin/python3
+
+lab_network: 192.168.56.0/24
+lab_timezone: Africa/Casablanca
+virtual_ip: 192.168.56.100
+
+postgresql_port: 5432
+postgresql_primary_address: 192.168.56.31
+postgresql_application_database: onprem_app
+postgresql_application_user: onprem_app
+
+lab_hosts:
+  - address: 192.168.56.11
+    name: web01
+  - address: 192.168.56.12
+    name: web02
+  - address: 192.168.56.31
+    name: db01
+  - address: 192.168.56.32
+    name: db02
+  - address: 192.168.56.100
+    name: onprem-ha-vip
+

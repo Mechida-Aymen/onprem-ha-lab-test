@@ -1,0 +1,52 @@
+---
+- name: Configure the PostgreSQL primary
+  hosts: db01
+  become: true
+  vars_files:
+    - group_vars/vault.yml
+  roles:
+    - postgresql
+
+- name: Configure the PostgreSQL replica
+  hosts: db02
+  become: true
+  vars_files:
+    - group_vars/vault.yml
+  roles:
+    - postgresql
+
+- name: Verify streaming replication from the primary
+  hosts: db01
+  become: true
+  tasks:
+    - name: Wait for the replica streaming connection
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --tuples-only
+          - --no-align
+          - --command
+          - "SELECT count(*) FROM pg_stat_replication WHERE application_name='{{ postgresql_replica_host }}_slot' OR state='streaming';"
+      become_user: postgres
+      register: postgresql_streaming_count
+      retries: 20
+      delay: 2
+      until: postgresql_streaming_count.stdout | int >= 1
+      changed_when: false
+
+    - name: Display the replication connection
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --tuples-only
+          - --no-align
+          - --field-separator=|
+          - --command
+          - "SELECT client_addr,application_name,state,sync_state FROM pg_stat_replication;"
+      become_user: postgres
+      register: postgresql_replication_status
+      changed_when: false
+
+    - name: Report replication status
+      ansible.builtin.debug:
+        var: postgresql_replication_status.stdout_lines

@@ -1,0 +1,10 @@
+# Managed by Ansible. Manual changes will be overwritten.
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+AllowUsers {{ ansible_user }}
+ClientAliveInterval 300
+ClientAliveCountMax 2
+

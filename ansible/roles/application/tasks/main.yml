@@ -1,0 +1,113 @@
+---
+- name: Validate application settings
+  ansible.builtin.assert:
+    that:
+      - application_port | int >= 1024
+      - application_port | int <= 65535
+      - not (application_database_enabled | bool) or postgresql_application_password | length >= 32
+    fail_msg: The application port must be between 1024 and 65535.
+  no_log: true
+
+- name: Install the Python runtime and PostgreSQL driver
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-psycopg2
+    state: present
+
+- name: Create the application group
+  ansible.builtin.group:
+    name: "{{ application_group }}"
+    system: true
+
+- name: Create the application account
+  ansible.builtin.user:
+    name: "{{ application_user }}"
+    group: "{{ application_group }}"
+    system: true
+    create_home: false
+    home: "{{ application_directory }}"
+    shell: /usr/sbin/nologin
+
+- name: Create the application directory
+  ansible.builtin.file:
+    path: "{{ application_directory }}"
+    state: directory
+    owner: root
+    group: "{{ application_group }}"
+    mode: "0750"
+
+- name: Install the application code
+  ansible.builtin.copy:
+    src: "{{ application_source }}"
+    dest: "{{ application_directory }}/app.py"
+    owner: root
+    group: "{{ application_group }}"
+    mode: "0640"
+  notify: Restart application
+
+- name: Install the systemd service
+  ansible.builtin.template:
+    src: onprem-ha-app.service.j2
+    dest: "/etc/systemd/system/{{ application_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart application
+
+- name: Install the protected application environment
+  ansible.builtin.template:
+    src: onprem-ha-app.env.j2
+    dest: "{{ application_environment_file }}"
+    owner: root
+    group: "{{ application_group }}"
+    mode: "0640"
+  notify: Restart application
+  no_log: true
+
+- name: Apply application changes before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the application
+  ansible.builtin.systemd_service:
+    name: "{{ application_service_name }}"
+    enabled: true
+    state: started
+
+- name: Wait for the application health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ application_port }}/health"
+    return_content: true
+    status_code: 200
+  register: application_health
+  retries: 10
+  delay: 1
+  until: application_health.status == 200
+
+- name: Verify the application health response
+  ansible.builtin.assert:
+    that:
+      - application_health.json.status == "ok"
+      - application_health.json.hostname == inventory_hostname
+    fail_msg: The application returned an unexpected health response.
+
+- name: Wait for the database health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ application_port }}/db-health"
+    return_content: true
+    status_code: 200
+  register: application_database_health
+  retries: 10
+  delay: 1
+  until: application_database_health.status == 200
+  when: application_database_enabled | bool
+
+- name: Verify the database health response
+  ansible.builtin.assert:
+    that:
+      - application_database_health.json.status == "ok"
+      - application_database_health.json.primary | bool
+      - application_database_health.json.query_result | int == 1
+    fail_msg: The application could not query the PostgreSQL primary.
+  when: application_database_enabled | bool
+

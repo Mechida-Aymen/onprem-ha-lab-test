@@ -1,0 +1,58 @@
+---
+- name: Validate HAProxy settings
+  ansible.builtin.assert:
+    that:
+      - groups['web'] | length >= 2
+      - haproxy_port | int >= 1
+      - haproxy_port | int <= 65535
+      - application_port | int >= 1
+      - application_port | int <= 65535
+    fail_msg: HAProxy requires at least two web backends and valid TCP ports.
+
+- name: Install HAProxy and troubleshooting tools
+  ansible.builtin.apt:
+    name:
+      - haproxy
+      - socat
+    state: present
+
+- name: Install the HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/haproxy -c -f %s
+  notify: Reload HAProxy
+
+- name: Enable and start HAProxy
+  ansible.builtin.systemd_service:
+    name: haproxy
+    enabled: true
+    state: started
+
+- name: Apply HAProxy changes before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Validate the active HAProxy configuration
+  ansible.builtin.command: /usr/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
+  changed_when: false
+
+- name: Wait for the local HAProxy health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ haproxy_port }}/health"
+    return_content: true
+    status_code: 200
+  register: haproxy_health
+  retries: 10
+  delay: 1
+  until: haproxy_health.status == 200
+
+- name: Verify HAProxy returned a healthy backend
+  ansible.builtin.assert:
+    that:
+      - haproxy_health.json.status == "ok"
+      - haproxy_health.json.hostname in groups['web']
+    fail_msg: HAProxy did not return a valid application health response.
+

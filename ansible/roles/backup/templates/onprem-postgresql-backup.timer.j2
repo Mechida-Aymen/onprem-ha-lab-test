@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the on-prem HA PostgreSQL backup daily
+
+[Timer]
+OnCalendar={{ postgresql_backup_calendar }}
+Persistent=true
+RandomizedDelaySec=300
+Unit=onprem-postgresql-backup.service
+
+[Install]
+WantedBy=timers.target

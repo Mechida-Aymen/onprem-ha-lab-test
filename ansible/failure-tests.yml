@@ -1,0 +1,274 @@
+---
+- name: Test application-backend failure handling
+  hosts: web02
+  become: true
+  tasks:
+    - name: Stop one application backend and test HAProxy
+      block:
+        - name: Stop the web02 application
+          ansible.builtin.systemd_service:
+            name: onprem-ha-app
+            state: stopped
+
+        - name: Wait for HAProxy to mark web02 down
+          ansible.builtin.pause:
+            seconds: 7
+
+        - name: Send repeated requests through the VIP
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/"
+            return_content: true
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          loop: "{{ range(1, 7) | list }}"
+          register: backend_failure_responses
+
+        - name: Assert every request used web01
+          ansible.builtin.assert:
+            that:
+              - backend_failure_responses.results | map(attribute='json.hostname') | unique | list == ['web01']
+            fail_msg: HAProxy sent traffic to the stopped web02 application.
+      always:
+        - name: Restore the web02 application
+          ansible.builtin.systemd_service:
+            name: onprem-ha-app
+            state: started
+
+        - name: Wait for the restored application
+          ansible.builtin.uri:
+            url: "http://{{ ansible_host }}:{{ application_port }}/health"
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          register: restored_web02_application
+          retries: 10
+          delay: 1
+          until: restored_web02_application.status == 200
+
+- name: Test HAProxy-aware VIP failover and failback
+  hosts: web01
+  become: true
+  tasks:
+    - name: Stop the preferred HAProxy and test the VIP
+      block:
+        - name: Stop HAProxy on web01
+          ansible.builtin.systemd_service:
+            name: haproxy
+            state: stopped
+
+        - name: Wait for Keepalived failover
+          ansible.builtin.pause:
+            seconds: 6
+
+        - name: Query the unchanged VIP after failover
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/health"
+            return_content: true
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          register: vip_failover_response
+
+        - name: Assert web02 owns client traffic
+          ansible.builtin.assert:
+            that:
+              - vip_failover_response.x_load_balancer == 'web02'
+            fail_msg: The VIP did not fail over to HAProxy on web02.
+      always:
+        - name: Restore HAProxy on web01
+          ansible.builtin.systemd_service:
+            name: haproxy
+            state: started
+
+        - name: Wait for Keepalived failback
+          ansible.builtin.pause:
+            seconds: 6
+
+        - name: Query the VIP after failback
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/health"
+            return_content: true
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          register: vip_failback_response
+
+        - name: Assert web01 reclaimed client traffic
+          ansible.builtin.assert:
+            that:
+              - vip_failback_response.x_load_balancer == 'web01'
+            fail_msg: The preferred web01 node did not reclaim the VIP.
+
+- name: Test PostgreSQL replica outage and recovery
+  hosts: db02
+  become: true
+  vars:
+    replica_outage_probe_id: 9002
+  tasks:
+    - name: Stop the replica while the primary remains writable
+      block:
+        - name: Stop PostgreSQL on db02
+          ansible.builtin.systemd_service:
+            name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+            state: stopped
+
+        - name: Write data on the primary during the replica outage
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --dbname={{ postgresql_application_database }}
+              - --set=ON_ERROR_STOP=1
+              - --command=INSERT INTO replication_probe (probe_id, message) VALUES ({{ replica_outage_probe_id }}, 'written-during-replica-outage') ON CONFLICT (probe_id) DO UPDATE SET message = EXCLUDED.message, written_at = now();
+          become_user: postgres
+          delegate_to: db01
+          changed_when: true
+
+        - name: Verify the application can still query the primary
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/db-health"
+            return_content: true
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          register: replica_outage_database_health
+
+        - name: Assert primary database service remains healthy
+          ansible.builtin.assert:
+            that:
+              - replica_outage_database_health.json.status == 'ok'
+              - replica_outage_database_health.json.primary | bool
+      always:
+        - name: Restore PostgreSQL on db02
+          ansible.builtin.systemd_service:
+            name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+            state: started
+
+        - name: Wait for db02 to accept connections
+          ansible.builtin.command: >-
+            pg_isready --host 127.0.0.1 --port {{ postgresql_port }}
+          register: restored_replica_ready
+          retries: 20
+          delay: 1
+          until: restored_replica_ready.rc == 0
+          changed_when: false
+
+    - name: Wait for streaming replication to reconnect
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --tuples-only
+          - --no-align
+          - --command=SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming';
+      become_user: postgres
+      delegate_to: db01
+      register: restored_streaming_replica
+      retries: 20
+      delay: 1
+      until: restored_streaming_replica.stdout | int >= 1
+      changed_when: false
+
+    - name: Verify outage data caught up to db02
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname={{ postgresql_application_database }}
+          - --tuples-only
+          - --no-align
+          - --command=SELECT message FROM replication_probe WHERE probe_id = {{ replica_outage_probe_id }};
+      become_user: postgres
+      register: replica_catchup_probe
+      retries: 15
+      delay: 1
+      until: replica_catchup_probe.stdout == 'written-during-replica-outage'
+      changed_when: false
+
+- name: Document the expected primary-database failure boundary
+  hosts: db01
+  become: true
+  tasks:
+    - name: Stop the primary and observe graceful application degradation
+      block:
+        - name: Stop PostgreSQL on db01
+          ansible.builtin.systemd_service:
+            name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+            state: stopped
+
+        - name: Verify the stateless application health remains available
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/health"
+            return_content: true
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+
+        - name: Verify database health reports service unavailable
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/db-health"
+            return_content: true
+            status_code: 503
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          register: primary_outage_database_health
+
+        - name: Assert the database failure is explicit
+          ansible.builtin.assert:
+            that:
+              - primary_outage_database_health.json.status == 'error'
+            fail_msg: The application did not report the primary outage correctly.
+      always:
+        - name: Restore PostgreSQL on db01
+          ansible.builtin.systemd_service:
+            name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+            state: started
+
+        - name: Wait for primary database recovery
+          ansible.builtin.command: >-
+            pg_isready --host 127.0.0.1 --port {{ postgresql_port }}
+          register: restored_primary_ready
+          retries: 20
+          delay: 1
+          until: restored_primary_ready.rc == 0
+          changed_when: false
+
+        - name: Wait for replication to reconnect after primary recovery
+          ansible.builtin.command:
+            argv:
+              - psql
+              - --tuples-only
+              - --no-align
+              - --command=SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming';
+          become_user: postgres
+          register: primary_recovery_streaming
+          retries: 20
+          delay: 1
+          until: primary_recovery_streaming.stdout | int >= 1
+          changed_when: false
+
+        - name: Verify database health recovered through the VIP
+          ansible.builtin.uri:
+            url: "http://{{ virtual_ip }}/db-health"
+            return_content: true
+            status_code: 200
+          delegate_to: localhost
+          become: false
+          environment:
+            no_proxy: "*"
+          register: recovered_primary_database_health
+          retries: 10
+          delay: 1
+          until: recovered_primary_database_health.status == 200

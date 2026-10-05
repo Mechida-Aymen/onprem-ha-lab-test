@@ -1,0 +1,14 @@
+---
+profile: basic
+exclude_paths:
+  - .cache/
+  - .git/
+  - ansible/group_vars/vault.yml
+skip_list:
+  # Plays that switch to postgres already declare become at play level.
+  - partial-become
+  # Existing public variable names describe the component they configure.
+  - var-naming[no-role-prefix]
+  # One read-only systemctl query validates the timer's active state.
+  - command-instead-of-module
+  - yaml[line-length]

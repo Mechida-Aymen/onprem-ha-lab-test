@@ -1,0 +1,26 @@
+---
+name: Feature request
+description: Suggest a focused improvement to the lab.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What problem would this feature solve?
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+      description: Describe the hosts, roles, playbooks, and validation involved.
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Availability and security trade-offs
+      description: Explain any additional resources, failure modes, or secrets.

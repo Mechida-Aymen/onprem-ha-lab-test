@@ -1,0 +1,75 @@
+---
+- name: Write a replication probe on the primary
+  hosts: db01
+  become: true
+  tasks:
+    - name: Create the replication probe table
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname={{ postgresql_application_database }}
+          - --set=ON_ERROR_STOP=1
+          - --command=CREATE TABLE IF NOT EXISTS replication_probe (probe_id integer PRIMARY KEY, message text NOT NULL, written_at timestamptz NOT NULL DEFAULT now());
+      become_user: postgres
+      register: replication_probe_table
+      changed_when: "'CREATE TABLE' in replication_probe_table.stdout"
+
+    - name: Write the current replication probe
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname={{ postgresql_application_database }}
+          - --set=ON_ERROR_STOP=1
+          - --command=INSERT INTO replication_probe (probe_id, message) VALUES (1, 'replicated') ON CONFLICT (probe_id) DO UPDATE SET message = EXCLUDED.message, written_at = now();
+      become_user: postgres
+      changed_when: true
+
+- name: Verify the replicated row on the replica
+  hosts: db02
+  become: true
+  tasks:
+    - name: Wait for the replication probe
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname={{ postgresql_application_database }}
+          - --tuples-only
+          - --no-align
+          - --command=SELECT message FROM replication_probe WHERE probe_id = 1;
+      become_user: postgres
+      register: replicated_probe
+      retries: 15
+      delay: 1
+      until: replicated_probe.stdout == 'replicated'
+      changed_when: false
+
+    - name: Confirm the replica remains read-only
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --tuples-only
+          - --no-align
+          - --command=SELECT pg_is_in_recovery();
+      become_user: postgres
+      register: replica_recovery_state
+      changed_when: false
+      failed_when: replica_recovery_state.stdout != 't'
+
+- name: Verify application database connectivity
+  hosts: web
+  become: true
+  serial: 1
+  tasks:
+    - name: Query the local database health endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ application_port }}/db-health"
+        return_content: true
+        status_code: 200
+      register: local_database_health
+
+    - name: Assert the application reached the primary
+      ansible.builtin.assert:
+        that:
+          - local_database_health.json.status == 'ok'
+          - local_database_health.json.primary | bool
+          - local_database_health.json.database_host == postgresql_primary_address

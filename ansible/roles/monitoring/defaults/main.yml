@@ -1,0 +1,4 @@
+---
+monitoring_node_exporter_port: 9100
+monitoring_textfile_directory: /var/lib/prometheus/node-exporter
+monitoring_collection_interval: 30s

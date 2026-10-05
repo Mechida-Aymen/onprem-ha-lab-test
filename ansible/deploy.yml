@@ -1,0 +1,60 @@
+---
+- name: Deploy the application without interrupting the VIP
+  hosts: web
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - group_vars/vault.yml
+  tasks:
+    - name: Drain, deploy, and restore one application backend
+      block:
+        - name: Disable this backend on every HAProxy node
+          ansible.builtin.shell: >-
+            printf 'disable server application_backends/{{ inventory_hostname }}\n'
+            | socat stdio /run/haproxy/admin.sock
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['web'] }}"
+          changed_when: true
+
+        - name: Allow existing requests to drain
+          ansible.builtin.pause:
+            seconds: 2
+
+        - name: Deploy and verify the application
+          ansible.builtin.include_role:
+            name: application
+      always:
+        - name: Re-enable this backend on every HAProxy node
+          ansible.builtin.shell: >-
+            printf 'enable server application_backends/{{ inventory_hostname }}\n'
+            | socat stdio /run/haproxy/admin.sock
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['web'] }}"
+          changed_when: true
+
+        - name: Allow HAProxy recovery checks to pass
+          ansible.builtin.pause:
+            seconds: 5
+
+    - name: Verify the stable VIP after this node deployment
+      ansible.builtin.uri:
+        url: "http://{{ virtual_ip }}/health"
+        return_content: true
+        status_code: 200
+      register: rolling_vip_health
+      delegate_to: localhost
+      become: false
+      environment:
+        no_proxy: "*"
+
+    - name: Assert the VIP returned a healthy backend
+      ansible.builtin.assert:
+        that:
+          - rolling_vip_health.json.status == 'ok'
+          - rolling_vip_health.json.hostname in groups['web']
+

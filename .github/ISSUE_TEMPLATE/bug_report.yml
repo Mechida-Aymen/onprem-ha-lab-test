@@ -1,0 +1,36 @@
+---
+name: Bug report
+description: Report reproducible incorrect behavior in the lab automation.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include passwords, private keys, Vault content, or database dumps.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Include the playbook and sanitized command output.
+    validations:
+      required: true
+  - type: input
+    id: component
+    attributes:
+      label: Affected component
+      placeholder: application, HAProxy, Keepalived, PostgreSQL, backup, monitoring, or CI
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Ansible, Debian, VirtualBox, and WSL versions where relevant.

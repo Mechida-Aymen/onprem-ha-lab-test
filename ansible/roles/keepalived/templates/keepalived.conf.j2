@@ -1,0 +1,41 @@
+# Managed by Ansible. Manual changes will be overwritten.
+
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+vrrp_script check_haproxy {
+    script "/usr/local/sbin/check-haproxy"
+    interval {{ keepalived_health_interval }}
+    timeout 2
+    fall {{ keepalived_health_fall }}
+    rise {{ keepalived_health_rise }}
+}
+
+vrrp_instance ONPREM_HA {
+    state {{ keepalived_nodes[inventory_hostname].state }}
+    interface {{ keepalived_interface }}
+    virtual_router_id {{ keepalived_virtual_router_id }}
+    priority {{ keepalived_nodes[inventory_hostname].priority }}
+    advert_int {{ keepalived_advert_interval }}
+
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% for host in groups['web'] if host != inventory_hostname %}
+        {{ hostvars[host].ansible_host }}
+{% endfor %}
+    }
+
+    virtual_ipaddress {
+        {{ virtual_ip }}/24 dev {{ keepalived_interface }}
+    }
+
+    track_script {
+        check_haproxy
+    }
+
+    garp_master_delay 1
+    garp_master_repeat 3
+}

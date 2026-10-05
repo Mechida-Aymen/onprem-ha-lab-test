@@ -1,0 +1,73 @@
+---
+- name: Check whether the replica was already initialized
+  ansible.builtin.stat:
+    path: "{{ postgresql_data_directory }}/standby.signal"
+  register: postgresql_standby_signal
+
+- name: Initialize the replica from the primary
+  when: not postgresql_standby_signal.stat.exists
+  block:
+    - name: Stop the replica cluster before initialization
+      ansible.builtin.systemd_service:
+        name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+        state: stopped
+
+    - name: Remove the empty default replica data directory
+      ansible.builtin.file:
+        path: "{{ postgresql_data_directory }}"
+        state: absent
+      diff: false
+
+    - name: Recreate the replica data directory
+      ansible.builtin.file:
+        path: "{{ postgresql_data_directory }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+
+    - name: Copy the primary with pg_basebackup
+      ansible.builtin.command:
+        argv:
+          - pg_basebackup
+          - --host={{ postgresql_primary_address }}
+          - --port={{ postgresql_port }}
+          - --username={{ postgresql_replication_user }}
+          - --pgdata={{ postgresql_data_directory }}
+          - --format=plain
+          - --wal-method=stream
+          - --checkpoint=fast
+          - --write-recovery-conf
+          - --slot={{ postgresql_replication_slot }}
+      become_user: postgres
+      environment:
+        PGPASSWORD: "{{ postgresql_replication_password }}"
+      no_log: true
+
+- name: Enable and start the replica cluster
+  ansible.builtin.systemd_service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    enabled: true
+    state: started
+
+- name: Wait for the replica to accept connections
+  ansible.builtin.command: >-
+    pg_isready --host 127.0.0.1 --port {{ postgresql_port }}
+  register: postgresql_replica_ready
+  retries: 20
+  delay: 2
+  until: postgresql_replica_ready.rc == 0
+  changed_when: false
+
+- name: Verify the replica is in recovery
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --tuples-only
+      - --no-align
+      - --command
+      - SELECT pg_is_in_recovery();
+  become_user: postgres
+  register: postgresql_replica_recovery
+  changed_when: false
+  failed_when: postgresql_replica_recovery.stdout != 't'

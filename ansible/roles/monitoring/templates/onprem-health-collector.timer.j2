@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect on-prem HA health metrics regularly
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec={{ monitoring_collection_interval }}
+AccuracySec=5s
+Unit=onprem-health-collector.service
+
+[Install]
+WantedBy=timers.target

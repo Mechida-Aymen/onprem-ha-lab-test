@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+metrics_directory="{{ monitoring_textfile_directory }}"
+temporary_file="$(mktemp "${metrics_directory}/.onprem-health.XXXXXX")"
+final_file="${metrics_directory}/onprem-health.prom"
+
+cleanup() {
+    rm -f "${temporary_file}"
+}
+trap cleanup EXIT
+
+service_metric() {
+    local service_name="$1"
+    local metric_value=0
+    if systemctl is-active --quiet "${service_name}"; then
+        metric_value=1
+    fi
+    printf 'onprem_service_up{host="%s",service="%s"} %s\n' \
+        "{{ inventory_hostname }}" "${service_name}" "${metric_value}" >> "${temporary_file}"
+}
+
+printf '# HELP onprem_service_up Whether a required systemd service is active.\n' > "${temporary_file}"
+printf '# TYPE onprem_service_up gauge\n' >> "${temporary_file}"
+service_metric ssh
+service_metric chrony
+service_metric nftables
+
+{% if 'web' in group_names %}
+service_metric onprem-ha-app
+service_metric haproxy
+service_metric keepalived
+
+application_up=0
+database_up=0
+vip_owned=0
+curl --fail --silent --show-error --max-time 3 \
+    "http://127.0.0.1:{{ application_port }}/health" >/dev/null 2>&1 && application_up=1
+curl --fail --silent --show-error --max-time 4 \
+    "http://127.0.0.1:{{ application_port }}/db-health" >/dev/null 2>&1 && database_up=1
+ip -4 -o address show | grep -Fq "{{ virtual_ip }}/" && vip_owned=1
+
+printf 'onprem_application_http_up{host="{{ inventory_hostname }}"} %s\n' "${application_up}" >> "${temporary_file}"
+printf 'onprem_application_database_up{host="{{ inventory_hostname }}"} %s\n' "${database_up}" >> "${temporary_file}"
+printf 'onprem_vip_owned{host="{{ inventory_hostname }}",vip="{{ virtual_ip }}"} %s\n' "${vip_owned}" >> "${temporary_file}"
+{% endif %}
+
+{% if 'database' in group_names %}
+service_metric postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}
+
+postgresql_ready=0
+pg_isready --quiet --host 127.0.0.1 --port {{ postgresql_port }} && postgresql_ready=1
+printf 'onprem_postgresql_ready{host="{{ inventory_hostname }}",role="{{ postgresql_node_role }}"} %s\n' "${postgresql_ready}" >> "${temporary_file}"
+
+{% if postgresql_node_role == 'primary' %}
+streaming_replicas="$(runuser -u postgres -- psql --tuples-only --no-align \
+    --command="SELECT count(*) FROM pg_stat_replication WHERE state='streaming';" 2>/dev/null || printf '0')"
+printf 'onprem_postgresql_streaming_replicas{host="{{ inventory_hostname }}"} %s\n' "${streaming_replicas:-0}" >> "${temporary_file}"
+{% else %}
+replica_in_recovery=0
+recovery_state="$(runuser -u postgres -- psql --tuples-only --no-align \
+    --command='SELECT pg_is_in_recovery();' 2>/dev/null || true)"
+[[ "${recovery_state}" == "t" ]] && replica_in_recovery=1
+printf 'onprem_postgresql_replica_in_recovery{host="{{ inventory_hostname }}"} %s\n' "${replica_in_recovery}" >> "${temporary_file}"
+{% endif %}
+{% endif %}
+
+chmod 0644 "${temporary_file}"
+mv "${temporary_file}" "${final_file}"

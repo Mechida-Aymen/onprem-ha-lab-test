@@ -1,0 +1,16 @@
+flowchart TB
+    User[Client] --> VIP["Floating VIP<br/>192.168.56.100"]
+    Controller["Windows + Debian WSL<br/>Ansible controller"] -. SSH / Ansible .-> Web1
+    Controller -. SSH / Ansible .-> Web2
+    Controller -. SSH / Ansible .-> DB1
+    Controller -. SSH / Ansible .-> DB2
+
+    subgraph WebTier[Highly available web tier]
+        VIP -. Keepalived VRRP .-> Web1["web01 · 192.168.56.11<br/>HAProxy + application"]
+        VIP -. Keepalived VRRP .-> Web2["web02 · 192.168.56.12<br/>HAProxy + application"]
+        Web1 <--> Web2
+    end
+
+    Web1 --> DB1["db01 · 192.168.56.31<br/>PostgreSQL primary"]
+    Web2 --> DB1
+    DB1 -- streaming replication --> DB2["db02 · 192.168.56.32<br/>PostgreSQL replica"]

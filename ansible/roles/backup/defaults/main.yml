@@ -1,0 +1,4 @@
+---
+postgresql_backup_directory: /var/backups/postgresql
+postgresql_backup_retention_days: 7
+postgresql_backup_calendar: "*-*-* 02:30:00"

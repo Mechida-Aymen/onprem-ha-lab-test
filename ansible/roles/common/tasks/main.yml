@@ -1,0 +1,100 @@
+---
+- name: Verify the supported operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "Debian"
+    fail_msg: "The common role currently supports Debian-family systems only."
+
+- name: Set the system hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Set the system timezone link
+  ansible.builtin.file:
+    src: "/usr/share/zoneinfo/{{ lab_timezone }}"
+    dest: /etc/localtime
+    state: link
+    force: true
+
+- name: Record the system timezone
+  ansible.builtin.copy:
+    content: "{{ lab_timezone }}\n"
+    dest: /etc/timezone
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Update the APT package index
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install common administration packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Apply safe package upgrades
+  ansible.builtin.apt:
+    upgrade: safe
+
+- name: Manage lab host records
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED LAB HOSTS"
+    block: |
+      {% for host in lab_hosts %}
+      {{ host.address }} {{ host.name }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install SSH hardening configuration
+  ansible.builtin.template:
+    src: 99-onprem-ha.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-onprem-ha.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload SSH
+
+- name: Install nftables rules
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload nftables
+
+- name: Enable core services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - chrony
+    - nftables
+    - ssh
+
+- name: Flush configuration handlers before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Chrony is synchronized or synchronizing
+  ansible.builtin.command: chronyc tracking
+  register: chrony_tracking
+  changed_when: false
+  failed_when: chrony_tracking.rc != 0
+
+- name: Verify the active SSH configuration
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+
+- name: Verify the active nftables ruleset
+  ansible.builtin.command: /usr/sbin/nft list ruleset
+  register: nftables_ruleset
+  changed_when: false
+  failed_when: "'table inet filter' not in nftables_ruleset.stdout"

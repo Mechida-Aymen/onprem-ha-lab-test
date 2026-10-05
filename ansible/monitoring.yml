@@ -1,0 +1,6 @@
+---
+- name: Configure lightweight monitoring on every node
+  hosts: all
+  become: true
+  roles:
+    - monitoring

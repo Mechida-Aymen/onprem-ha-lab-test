@@ -1,0 +1,6 @@
+---
+keepalived_virtual_router_id: 51
+keepalived_advert_interval: 1
+keepalived_health_interval: 2
+keepalived_health_fall: 2
+keepalived_health_rise: 2

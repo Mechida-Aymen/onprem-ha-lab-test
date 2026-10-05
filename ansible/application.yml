@@ -1,0 +1,10 @@
+---
+- name: Deploy the demonstration application
+  hosts: web
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  vars_files:
+    - group_vars/vault.yml
+  roles:
+    - application

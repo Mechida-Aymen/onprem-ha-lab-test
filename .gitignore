@@ -1,0 +1,40 @@
+# Ansible runtime files
+*.retry
+ansible/.cache/
+ansible/facts/
+
+# Secrets and local overrides
+.vault_password
+*.vault-password
+ansible/inventory/local.yml
+ansible/group_vars/vault-plaintext.yml
+ansible/group_vars/vault.yml
+
+# SSH keys
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Backups and logs
+backups/
+*.dump
+*.sql
+*.log
+
+# Local installation media and generated credentials
+.cache/
+.local/
+*.iso
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

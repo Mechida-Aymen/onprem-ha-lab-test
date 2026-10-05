@@ -1,0 +1,101 @@
+---
+- name: Validate Keepalived inventory settings
+  ansible.builtin.assert:
+    that:
+      - groups['web'] | length == 2
+      - inventory_hostname in keepalived_nodes
+      - keepalived_nodes[inventory_hostname].state in ['MASTER', 'BACKUP']
+      - keepalived_nodes[inventory_hostname].priority | int >= 1
+      - keepalived_nodes[inventory_hostname].priority | int <= 254
+    fail_msg: Keepalived requires exactly two correctly configured web nodes.
+
+- name: Initialize the private-interface match list
+  ansible.builtin.set_fact:
+    keepalived_private_interfaces: []
+  changed_when: false
+
+- name: Find the interface carrying the inventory address
+  ansible.builtin.set_fact:
+    keepalived_private_interfaces: "{{ keepalived_private_interfaces + [item] }}"
+  loop: "{{ ansible_facts.interfaces }}"
+  when:
+    - ansible_facts[item] is defined
+    - ansible_facts[item].ipv4 is defined
+    - ansible_facts[item].ipv4.address == ansible_host
+  changed_when: false
+
+- name: Require exactly one matching private interface
+  ansible.builtin.assert:
+    that:
+      - keepalived_private_interfaces | length == 1
+    fail_msg: >-
+      Could not uniquely find the interface using {{ ansible_host }}.
+      Detected matches: {{ keepalived_private_interfaces }}
+
+- name: Select the Keepalived interface
+  ansible.builtin.set_fact:
+    keepalived_interface: "{{ keepalived_private_interfaces | first }}"
+  changed_when: false
+
+- name: Install Keepalived
+  ansible.builtin.apt:
+    name: keepalived
+    state: present
+
+- name: Install the HAProxy health-check script
+  ansible.builtin.copy:
+    content: |
+      #!/bin/sh
+      exec /usr/bin/systemctl is-active --quiet haproxy
+    dest: /usr/local/sbin/check-haproxy
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Keepalived
+
+- name: Install the Keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/keepalived --config-test --use-file=%s
+  notify: Restart Keepalived
+
+- name: Enable and start Keepalived
+  ansible.builtin.systemd_service:
+    name: keepalived
+    enabled: true
+    state: started
+
+- name: Apply Keepalived changes before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Validate the active Keepalived configuration
+  ansible.builtin.command: >-
+    /usr/sbin/keepalived --config-test
+    --use-file=/etc/keepalived/keepalived.conf
+  changed_when: false
+
+- name: Read core service states
+  ansible.builtin.service_facts:
+
+- name: Verify Keepalived and HAProxy are running
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services['keepalived.service'].state == 'running'
+      - ansible_facts.services['haproxy.service'].state == 'running'
+    fail_msg: Keepalived or its tracked HAProxy service is not running.
+
+- name: Read addresses on the private interface
+  ansible.builtin.command: "ip -4 -o address show dev {{ keepalived_interface }}"
+  register: keepalived_interface_addresses
+  changed_when: false
+
+- name: Report this node's election state
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} uses {{ keepalived_interface }};
+      VIP present={{ virtual_ip in keepalived_interface_addresses.stdout }}.
+

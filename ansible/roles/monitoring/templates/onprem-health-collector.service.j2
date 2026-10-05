@@ -1,0 +1,14 @@
+[Unit]
+Description=Collect custom health metrics for the on-prem HA lab
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/collect-onprem-health
+User=root
+Group=root
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ monitoring_textfile_directory }}

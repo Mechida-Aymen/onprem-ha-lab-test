@@ -1,0 +1,27 @@
+[Unit]
+Description=On-Prem HA Lab demonstration application
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User={{ application_user }}
+Group={{ application_group }}
+WorkingDirectory={{ application_directory }}
+EnvironmentFile={{ application_environment_file }}
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 {{ application_directory }}/app.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
