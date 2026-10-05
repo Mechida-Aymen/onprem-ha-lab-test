@@ -34,4 +34,12 @@ Markdown local links: passed
 Git whitespace check: passed
 ```
 
-The GitHub-hosted workflow will run for the first time after the repository is pushed. No remote repository was created or changed during this phase.
+## Cloud verification
+
+The public test repository was published at `Mechida-Aymen/onprem-ha-lab-test`. Its first cloud run found that the Python cache step needed an explicit `requirements-dev.txt` dependency path. The workflow was corrected and tested again.
+
+GitHub Actions run `37375831156` completed successfully on 2026-10-05. Both jobs passed:
+
+- **Ansible and repository quality:** dependency installation, YAML, Ansible lint, all playbook syntax checks, Python compilation, ShellCheck, and Markdown links.
+- **Secret scan:** the complete published commit history passed Gitleaks.
+
